@@ -69,7 +69,7 @@ if __name__ == '__main__':
     )
     print("ARGS:", args)
     trainer.fit(model, data_mod)
-    torch.save([model.tr_loss,model.va_loss,model.tr_acc,model.va_acc],
+    torch.save([model.tr_loss,model.va_loss,model.tr_acc,model.va_acc,model.tr_dice,model.va_dice,model.rf_reg_loss if args.rfr else []] ,
         'stats/stats_use_rf={}_on_up={}_rf_reg_weight={}_reg_layer={}_lr={}_epoch={}_dataset={}.pkl'.format(
             args.rfr, 
             args.rf_on_up,

@@ -101,6 +101,8 @@ class UNetLightning(LightningModule):
         self.va_dice = []
         self.tr_temp_dice = []
         self.va_temp_dice = []
+        self.rf_reg_loss = []
+        self.rf_reg_temp_loss = []
 
 
     def forward(self,x):
@@ -134,6 +136,7 @@ class UNetLightning(LightningModule):
             rf_loss = used_areas[self.reg_layers]
             # rf_loss = torch.mean(used_areas[:self.reg_layers])
             freq_reg_loss = self.rf_reg_weight * rf_loss
+            self.rf_reg_temp_loss.append(freq_reg_loss.item())
             loss += freq_reg_loss
             # print(rf_loss.requires_grad,used_areas[0].requires_grad)
             self.log("tr_freq_reg", freq_reg_loss,prog_bar=True)
@@ -157,9 +160,11 @@ class UNetLightning(LightningModule):
         self.tr_loss.append(sum(self.tr_temp_loss)/len(self.tr_temp_loss))
         self.tr_acc.append(sum(self.tr_temp_acc)/len(self.tr_temp_acc))
         self.tr_dice = sum(self.tr_temp_dice)/len(self.tr_temp_dice)
+        self.rf_reg_loss.append(sum(self.rf_reg_temp_loss)/len(self.rf_reg_temp_loss))
         self.tr_temp_loss = []
         self.tr_temp_acc = []
         self.tr_temp_dice = []
+        self.rf_reg_temp_loss = []
 
     def validation_step(self, batch, batch_idx):
         x, y = batch

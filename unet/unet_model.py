@@ -56,6 +56,7 @@ class UNet(nn.Module):
             x,used_area = self.up4(x, x1)
             prev += used_area
             used_areas[3] += prev
+            used_areas[4] += prev
         else:
             x = self.up1(x5, x4)
             x = self.up2(x, x3)
