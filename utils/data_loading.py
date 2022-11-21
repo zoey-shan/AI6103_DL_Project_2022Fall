@@ -1,0 +1,288 @@
+import logging
+from os import listdir
+from os.path import splitext
+from pathlib import Path
+
+import numpy as np
+import torch
+from PIL import Image
+from torch.utils.data import Dataset
+
+import torchvision.transforms as T
+#from utils.augmentation import *
+from utils.allAugmentation_replace import *
+
+
+class PhcDataset(Dataset):
+    def __init__(self, phc_path: str, scale: float = 1.0, transform=None, **kwargs):
+        self.transform = transform
+
+        self.image_paths = []
+        self.label_paths = []
+        self.phc = Path(phc_path)
+        for i in ['01', '02']:
+            image_subdir = self.phc / i
+            label_subdir = self.phc / f'{i}_ST' / 'SEG'
+            self.image_paths += [img for img in image_subdir.iterdir() if img.suffix == '.tif']
+            self.label_paths += [lab for lab in label_subdir.iterdir() if lab.suffix == '.tif']
+        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+        self.scale = scale
+    
+    def __len__(self):
+        return len(self.image_paths)
+
+    @staticmethod
+    def preprocess(pil_img, scale, is_mask):
+        w, h = pil_img.size
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        img_ndarray = np.asarray(pil_img)
+
+        if not is_mask:
+            if img_ndarray.ndim == 2:
+                img_ndarray = img_ndarray[np.newaxis, ...]
+            else:
+                img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+            img_ndarray = img_ndarray / 255
+        else:
+            img_ndarray = np.array(img_ndarray > 0, dtype=np.int)
+
+        return img_ndarray
+
+    def __getitem__(self, idx):
+        img = Image.open(self.image_paths[idx])
+        lab = Image.open(self.label_paths[idx])
+        assert img.size == lab.size, \
+            f'Image and mask {self.image_paths[idx].stem} should be the same size, but are {img.size} and {lab.size}'
+
+        # Apply data augmentatition is the transform is specified
+        if self.transform is not None:
+            print("data augmentation is applied")
+            img, lab = self.transform(img, lab)
+            # print(img.shape, mask.shape)
+            # torch.Size([1, 520, 696]) torch.Size([1, 520, 696])
+
+            print("if transfer to tensor")
+            print(torch.as_tensor(img).float().contiguous().shape)
+
+            # augmented images are transformed from tendor to the Image format
+            # img = PIL.Image.fromarray(img)
+            # mask = PIL.Image.fromarray(mask)
+            toImage = T.ToPILImage()
+            img = toImage(img).convert("L")
+            lab = toImage(lab).convert("L")
+
+        # the same preprocessing step is performed after the data augmentation
+        img = self.preprocess(img, self.scale, is_mask=False)
+        lab = self.preprocess(lab, self.scale, is_mask=True)
+        return {
+            'image': torch.as_tensor(img.copy()).float().contiguous(),
+            'mask': torch.as_tensor(lab.copy().astype(np.int16)).long().contiguous()
+        }
+
+class BasicDataset(Dataset):
+    def __init__(self, images_dir: str, masks_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+        self.images_dir = Path(images_dir)
+        self.masks_dir = Path(masks_dir)
+        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+        self.scale = scale
+        self.mask_suffix = mask_suffix
+
+        self.ids = [splitext(file)[0] for file in listdir(images_dir) if not file.startswith('.')]
+        if not self.ids:
+            raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
+        logging.info(f'Creating dataset with {len(self.ids)} examples')
+
+    def __len__(self):
+        return len(self.ids)
+
+    @staticmethod
+    def preprocess(pil_img, scale, is_mask):
+        w, h = pil_img.size
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        img_ndarray = np.asarray(pil_img)
+
+        if not is_mask:
+            if img_ndarray.ndim == 2:
+                img_ndarray = img_ndarray[np.newaxis, ...]
+            else:
+                img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+            img_ndarray = img_ndarray / 255
+
+        return img_ndarray
+
+    @staticmethod
+    def load(filename):
+        ext = splitext(filename)[1]
+        if ext == '.npy':
+            return Image.fromarray(np.load(filename))
+        elif ext in ['.pt', '.pth']:
+            return Image.fromarray(torch.load(filename).numpy())
+        else:
+            return Image.open(filename)
+
+    def __getitem__(self, idx):
+        name = self.ids[idx]
+        mask_file = list(self.masks_dir.glob(name + self.mask_suffix + '.*'))
+        img_file = list(self.images_dir.glob(name + '.*'))
+
+        assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
+        assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
+        mask = self.load(mask_file[0])
+        img = self.load(img_file[0])
+
+        assert img.size == mask.size, \
+            f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
+
+        img = self.preprocess(img, self.scale, is_mask=False)
+        mask = self.preprocess(mask, self.scale, is_mask=True)
+
+        return {
+            'image': torch.as_tensor(img.copy()).float().contiguous(),
+            'mask': torch.as_tensor(mask.copy()).long().contiguous()
+        }
+
+
+class CarvanaDataset(BasicDataset):
+    def __init__(self, images_dir, masks_dir, scale=1):
+        super().__init__(images_dir, masks_dir, scale, mask_suffix='_mask')
+        
+        
+        
+# import logging
+# from os import listdir
+# from os.path import splitext
+# from pathlib import Path
+# import matplotlib.pyplot as plt
+
+# import numpy as np
+# import torch
+# from PIL import Image
+# from torch.utils.data import Dataset
+
+
+# class PhcDataset(Dataset):
+#     def __init__(self, images_dir: str, masks_dir: str, scale: float = 1.0, mask_suffix: str = '',use_rf: bool = False, **kwargs):
+#         self.images = list(Path(images_dir).iterdir())
+#         self.images_dir = images_dir
+#         self.masks_dir = masks_dir
+#         self.scale = scale
+#         self.mask_suffix = mask_suffix
+#         self.use_rf = use_rf
+    
+#     def __len__(self):
+#         return len(self.images) 
+    
+
+#     @staticmethod
+#     def preprocess(pil_img, scale, is_mask):
+#         w, h = pil_img.size
+#         newW, newH = int(scale * w), int(scale * h)
+#         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+#         pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+#         img_ndarray = np.asarray(pil_img)
+
+#         if not is_mask:
+#             if img_ndarray.ndim == 2:
+#                 img_ndarray = img_ndarray[np.newaxis, ...]
+#             else:
+#                 img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+#             img_ndarray = img_ndarray / 255
+#         else:
+#             img_ndarray = np.array(img_ndarray>0, dtype=np.int)
+
+#         return img_ndarray
+
+#     def __getitem__(self, idx):
+#         img_path = self.images[idx]
+#         img = Image.open(img_path)
+#         img_name = img_path.name
+#         mask_name = "man_seg" + img_name[1:]
+#         mask = Image.open(f'{self.masks_dir}/{mask_name}',)
+
+#         assert img.size == mask.size, \
+#             f'Image and mask {img_path} should be the same size, but are {img.size} and {mask.size}'
+
+#         img = self.preprocess(img, self.scale, is_mask=False)
+        
+#         mask = self.preprocess(mask, self.scale, is_mask=True)
+
+#         return {
+#             'image': torch.as_tensor(img.copy()).float().contiguous(),
+#             'mask': torch.as_tensor(mask.copy()).long().contiguous()
+#         }
+
+# class BasicDataset(Dataset):
+#     def __init__(self, images_dir: str, masks_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+#         self.images_dir = Path(images_dir)
+#         self.masks_dir = Path(masks_dir)
+#         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+#         self.scale = scale
+#         self.mask_suffix = mask_suffix
+
+#         self.ids = [splitext(file)[0] for file in listdir(images_dir) if not file.startswith('.')]
+#         if not self.ids:
+#             raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
+#         logging.info(f'Creating dataset with {len(self.ids)} examples')
+
+#     def __len__(self):
+#         return len(self.ids)
+
+#     @staticmethod
+#     def preprocess(pil_img, scale, is_mask):
+#         w, h = pil_img.size
+#         newW, newH = int(scale * w), int(scale * h)
+#         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+#         pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+#         img_ndarray = np.asarray(pil_img)
+
+#         if not is_mask:
+#             if img_ndarray.ndim == 2:
+#                 img_ndarray = img_ndarray[np.newaxis, ...]
+#             else:
+#                 img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+#             img_ndarray = img_ndarray / 255
+
+#         return img_ndarray
+
+#     @staticmethod
+#     def load(filename):
+#         ext = splitext(filename)[1]
+#         if ext == '.npy':
+#             return Image.fromarray(np.load(filename))
+#         elif ext in ['.pt', '.pth']:
+#             return Image.fromarray(torch.load(filename).numpy())
+#         else:
+#             return Image.open(filename)
+
+#     def __getitem__(self, idx):
+#         name = self.ids[idx]
+#         mask_file = list(self.masks_dir.glob(name + self.mask_suffix + '.*'))
+#         img_file = list(self.images_dir.glob(name + '.*'))
+#         assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
+#         assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
+#         mask = self.load(mask_file[0])
+#         img = self.load(img_file[0])
+
+#         assert img.size == mask.size, \
+#             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
+
+#         img = self.preprocess(img, self.scale, is_mask=False)
+#         mask = self.preprocess(mask, self.scale, is_mask=True)
+
+#         return {
+#             'image': torch.as_tensor(img.copy()).float().contiguous(),
+#             'mask': torch.as_tensor(mask.copy()).long().contiguous()
+#         }
+
+
+# class CarvanaDataset(BasicDataset):
+#     def __init__(self, images_dir, masks_dir, scale=1):
+#         super().__init__(images_dir, masks_dir, scale, mask_suffix='_mask')
