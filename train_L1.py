@@ -27,10 +27,10 @@ dir_checkpoint = Path('./checkpoints/')
 class Regularization(torch.nn.Module):
     def __init__(self,model,weight_decay,p):
         '''
-        :param model 模型
-        :param weight_decay:正则化参数
-        :param p: 范数计算中的幂指数值，默认求2范数,
-                  当p=0为L2正则化,p=1为L1正则化
+        Param model model. 
+        : param weight_decay: regularization parameter. 
+        : param p: the power exponent value in norm calculation. 2 norm is obtained by default. 
+        When pairing 0 is L2 regularization, pair1 is L1 regularization.
         '''
         super(Regularization, self).__init__()
         if weight_decay <= 0:
@@ -44,7 +44,7 @@ class Regularization(torch.nn.Module):
  
     def to(self,device):
         '''
-        指定运行模式
+        Specify operation mode
         :param device: cude or cpu
         :return:
         '''
@@ -53,13 +53,13 @@ class Regularization(torch.nn.Module):
         return self
  
     def forward(self, model):
-        self.weight_list=self.get_weight(model)#获得最新的权重
+        self.weight_list=self.get_weight(model)#Get the latest weight
         reg_loss = self.regularization_loss(self.weight_list, self.weight_decay, p=self.p)
         return reg_loss
  
     def get_weight(self,model):
         '''
-        获得模型的权重列表
+        Get the weight list of the model
         :param model:
         :return:
         '''
