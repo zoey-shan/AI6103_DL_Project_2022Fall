@@ -15,14 +15,12 @@ from tqdm import tqdm
 from utils.data_loading import BasicDataset, CarvanaDataset, PhCDataset
 from utils.dice_score import dice_loss
 from evaluate import evaluate
-from unet import UNet
+from unet import UNetDrop
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-
 dir_img = Path('./data/imgs/')
 dir_mask = Path('./data/masks/')
-dir_phc = Path('/data/student/data/student/zhouyingquan/Pytorch-UNet/PhC-C2DH-U373/')
 dir_checkpoint = Path('./checkpoints/')
 
 
@@ -36,10 +34,11 @@ def train_net(net,
               img_scale: float = 0.5,
               amp: bool = False):
     # 1. Create dataset
-    try:
-        dataset = PhCDataset(dir_phc)
-    except (AssertionError, RuntimeError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    # try:
+    #     dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+    # except (AssertionError, RuntimeError):
+    #     dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    dataset = PhCDataset('PhC-C2DH-U373', img_scale)
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -47,7 +46,7 @@ def train_net(net,
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=2, pin_memory=False)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -165,6 +164,7 @@ def get_args():
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
+    parser.add_argument('--dropout-p', '-p', dest='dropout_p', type=float, default=0.5, help='Dropout Probability')
 
     return parser.parse_args()
 
@@ -179,7 +179,7 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_classes is the number of probabilities you want to get per pixel
-    net = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear)
+    net = UNetDrop(n_channels=1, n_classes=args.classes, bilinear=args.bilinear, dropout_p=args.dropout_p)
 
     logging.info(f'Network:\n'
                  f'\t{net.n_channels} input channels\n'

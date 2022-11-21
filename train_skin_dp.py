@@ -12,47 +12,56 @@ from torch import optim
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
-from utils.data_loading import BasicDataset, CarvanaDataset, PhCDataset
+from utils.data_loading import BasicDataset, CarvanaDataset, PhCDataset, SkinDataset, ValSkinDataset
 from utils.dice_score import dice_loss
 from evaluate import evaluate
-from unet import UNet
+from unet import UNetDrop
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-
 dir_img = Path('./data/imgs/')
 dir_mask = Path('./data/masks/')
-dir_phc = Path('/data/student/data/student/zhouyingquan/Pytorch-UNet/PhC-C2DH-U373/')
+# dir_phc = Path('/home/MSAI/li0002di/PhC-C2DH-U373')
+dir_skin = Path(r'./skin lesion/')
 dir_checkpoint = Path('./checkpoints/')
+
+
+train_loss_list = []
+train_acc_list = []
+test_loss_list = []
+test_acc_list = []
 
 
 def train_net(net,
               device,
-              epochs: int = 5,
+              epochs: int = 30,
               batch_size: int = 1,
               learning_rate: float = 1e-5,
               val_percent: float = 0.1,
               save_checkpoint: bool = True,
-              img_scale: float = 0.5,
+              img_scale: float = 1, #0.5
               amp: bool = False):
     # 1. Create dataset
     try:
-        dataset = PhCDataset(dir_phc)
+        train_set = SkinDataset(dir_skin)
+        val_set = ValSkinDataset(dir_skin)
     except (AssertionError, RuntimeError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+        train_set = BasicDataset(dir_img, dir_mask, img_scale)
 
     # 2. Split into train / validation partitions
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    # n_val = int(len(dataset) * val_percent)
+    # n_train = len(dataset) - n_val
+    n_val = len(val_set)
+    n_train = len(train_set)
+    # train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=2, pin_memory=False)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net', resume='allow', anonymous='must', mode='dryrun')
+    experiment = wandb.init(project='U-Net', resume='allow', anonymous='allow', mode='dryrun')
     experiment.config.update(dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
                                   val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale,
                                   amp=amp))
@@ -80,6 +89,9 @@ def train_net(net,
     for epoch in range(1, epochs+1):
         net.train()
         epoch_loss = 0
+        tr_loss_avg = []
+        val_loss_avg = []
+        val_acc_avg = []
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for batch in train_loader:
                 images = batch['image']
@@ -108,12 +120,15 @@ def train_net(net,
                 pbar.update(images.shape[0])
                 global_step += 1
                 epoch_loss += loss.item()
-                experiment.log({
-                    'train loss': loss.item(),
-                    'step': global_step,
-                    'epoch': epoch
-                })
+                tr_loss_avg.append(loss.item())
+                # experiment.log({
+                #     'train loss': loss.item(),
+                #     'step': global_step,
+                #     'epoch': epoch
+                # })
+                train_loss_list.append(loss.item())
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
+
 
                 # Evaluation round
                 division_step = (n_train // (10 * batch_size))
@@ -128,14 +143,37 @@ def train_net(net,
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
                         val_score, val_loss = evaluate(net, val_loader, device)
-                        val_loss = np.mean(val_loss)
-                        scheduler.step(val_score)
+                        val_loss_avg.append(val_loss)
+                        val_acc_avg.append(val_score.cpu())
 
+                        scheduler.step(val_score)
+                        
                         logging.info('Validation Dice score: {}'.format(val_score))
-                        experiment.log({
+                        # experiment.log({
+                        #     'learning rate': optimizer.param_groups[0]['lr'],
+                        #     'validation Dice': val_score,
+                        #     'validation Loss': val_loss,
+                        #     'images': wandb.Image(images[0].cpu()),
+                        #     'masks': {
+                        #         'true': wandb.Image(true_masks[0].float().cpu()),
+                        #         'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                        #     },
+                        #     'step': global_step,
+                        #     'epoch': epoch,
+                        #     **histograms
+                        # })
+
+        if save_checkpoint:
+            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+            torch.save(net.state_dict(), str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
+            logging.info(f'Checkpoint {epoch} saved!')
+            experiment.log({
+                            'train loss': np.mean(tr_loss_avg),
                             'learning rate': optimizer.param_groups[0]['lr'],
-                            'validation Dice': val_score,
-                            'validation Loss': val_loss,
+                            # 'validation Dice': val_score,
+                            # 'validation Loss': val_loss,
+                            'validation Dice': np.mean(val_acc_avg),
+                            'validation Loss': np.mean(val_loss_avg),
                             'images': wandb.Image(images[0].cpu()),
                             'masks': {
                                 'true': wandb.Image(true_masks[0].float().cpu()),
@@ -145,11 +183,6 @@ def train_net(net,
                             'epoch': epoch,
                             **histograms
                         })
-
-        if save_checkpoint:
-            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-            torch.save(net.state_dict(), str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
-            logging.info(f'Checkpoint {epoch} saved!')
 
 
 def get_args():
@@ -165,6 +198,7 @@ def get_args():
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
+    parser.add_argument('--dropout-p', '-p', dest='dropout_p', type=float, default=0.5, help='Dropout Probability')
 
     return parser.parse_args()
 
@@ -179,7 +213,7 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_classes is the number of probabilities you want to get per pixel
-    net = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear)
+    net = UNetDrop(n_channels=3, n_classes=args.classes, bilinear=args.bilinear, dropout_p=args.dropout_p)
 
     logging.info(f'Network:\n'
                  f'\t{net.n_channels} input channels\n'
@@ -200,6 +234,11 @@ if __name__ == '__main__':
                   img_scale=args.scale,
                   val_percent=args.val / 100,
                   amp=args.amp)
+        with open("result-constant.txt","w") as f:
+            f.write("Train Loss:\n")
+            f.write(str(train_loss_list)+"\n")
+            f.write("Test Accuracy:\n")
+            f.write(str(test_acc_list)+"\n")
     except KeyboardInterrupt:
         torch.save(net.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')

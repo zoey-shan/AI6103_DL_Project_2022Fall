@@ -1,6 +1,6 @@
 import logging
 from os import listdir
-from os.path import splitext
+from os.path import splitext, basename
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +8,166 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+class SkinDataset(Dataset):
+    def __init__(self, skin_path: str, scale: float = 1.0, **kwargs):
+        self.image_paths = []
+        self.label_paths = []
+        self.skin = Path(skin_path)
+
+        image_subdir = self.skin / 'trainx'
+        label_subdir = self.skin / 'trainy'
+
+        self.image_paths += sorted([img for img in image_subdir.iterdir() if img.suffix == '.jpg'])
+        self.label_paths += sorted([lab for lab in label_subdir.iterdir() if lab.suffix == '.jpg'])
+
+        # for i in ['01', '02']:
+        #     image_subdir = self.phc / i
+        #     label_subdir = self.phc / f'{i}_ST' / 'SEG'
+        #     self.image_paths += [img for img in image_subdir.iterdir() if img.suffix == '.tif']
+        #     self.label_paths += [lab for lab in label_subdir.iterdir() if lab.suffix == '.tif']
+        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+        self.scale = scale
+    
+    def __len__(self):
+        return len(self.image_paths)
+
+    @staticmethod
+    def preprocess(pil_img, scale, is_mask):
+        w, h = pil_img.size
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        img_ndarray = np.asarray(pil_img)
+
+        if not is_mask:
+            if img_ndarray.ndim == 2:
+                img_ndarray = img_ndarray[np.newaxis, ...]
+            else:
+                img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+            img_ndarray = img_ndarray / 255
+        else:
+            img_ndarray = np.array(img_ndarray > 0, dtype=np.int)
+
+        return img_ndarray
+
+    def __getitem__(self, idx):
+        assert basename(self.image_paths[idx])[4:] == basename(self.label_paths[idx])[4:]
+        img = Image.open(self.image_paths[idx])
+        lab = Image.open(self.label_paths[idx])
+        assert img.size == lab.size, \
+            f'Image and mask {self.image_paths[idx].stem} should be the same size, but are {img.size} and {lab.size}'
+        img = self.preprocess(img, self.scale, is_mask=False)
+        lab = self.preprocess(lab, self.scale, is_mask=True)
+        return {
+            'image': torch.as_tensor(img.copy()).float().contiguous(),
+            'mask': torch.as_tensor(lab.copy().astype(np.int16)).long().contiguous()
+        }
+
+class ValSkinDataset(Dataset):
+    def __init__(self, skin_path: str, scale: float = 1.0, **kwargs):
+        self.image_paths = []
+        self.label_paths = []
+        self.skin = Path(skin_path)
+
+        image_subdir = self.skin / 'validationx'
+        label_subdir = self.skin / 'validationy'
+
+        self.image_paths += sorted([img for img in image_subdir.iterdir() if img.suffix == '.jpg'])
+        self.label_paths += sorted([lab for lab in label_subdir.iterdir() if lab.suffix == '.jpg'])
+
+        # for i in ['01', '02']:
+        #     image_subdir = self.phc / i
+        #     label_subdir = self.phc / f'{i}_ST' / 'SEG'
+        #     self.image_paths += [img for img in image_subdir.iterdir() if img.suffix == '.tif']
+        #     self.label_paths += [lab for lab in label_subdir.iterdir() if lab.suffix == '.tif']
+        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+        self.scale = scale
+    
+    def __len__(self):
+        return len(self.image_paths)
+
+    @staticmethod
+    def preprocess(pil_img, scale, is_mask):
+        w, h = pil_img.size
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        img_ndarray = np.asarray(pil_img)
+
+        if not is_mask:
+            if img_ndarray.ndim == 2:
+                img_ndarray = img_ndarray[np.newaxis, ...]
+            else:
+                img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+            img_ndarray = img_ndarray / 255
+        else:
+            img_ndarray = np.array(img_ndarray > 0, dtype=np.int)
+
+        return img_ndarray
+
+    def __getitem__(self, idx):
+        assert basename(self.image_paths[idx])[4:] == basename(self.label_paths[idx])[4:]
+        img = Image.open(self.image_paths[idx])
+        lab = Image.open(self.label_paths[idx])
+        assert img.size == lab.size, \
+            f'Image and mask {self.image_paths[idx].stem} should be the same size, but are {img.size} and {lab.size}'
+        img = self.preprocess(img, self.scale, is_mask=False)
+        lab = self.preprocess(lab, self.scale, is_mask=True)
+        return {
+            'image': torch.as_tensor(img.copy()).float().contiguous(),
+            'mask': torch.as_tensor(lab.copy().astype(np.int16)).long().contiguous()
+        }
+
+
+class PhCDataset(Dataset):
+    def __init__(self, phc_path: str, scale: float = 1.0, **kwargs):
+        self.image_paths = []
+        self.label_paths = []
+        self.phc = Path(phc_path)
+        for i in ['01', '02']:
+            image_subdir = self.phc / i
+            label_subdir = self.phc / f'{i}_ST' / 'SEG'
+            self.image_paths += sorted([img for img in image_subdir.iterdir() if img.suffix == '.tif'])
+            self.label_paths += sorted([lab for lab in label_subdir.iterdir() if lab.suffix == '.tif'])
+        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
+        self.scale = scale
+    
+    def __len__(self):
+        return len(self.image_paths)
+
+    @staticmethod
+    def preprocess(pil_img, scale, is_mask):
+        w, h = pil_img.size
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+        img_ndarray = np.asarray(pil_img)
+
+        if not is_mask:
+            if img_ndarray.ndim == 2:
+                img_ndarray = img_ndarray[np.newaxis, ...]
+            else:
+                img_ndarray = img_ndarray.transpose((2, 0, 1))
+
+            img_ndarray = img_ndarray / 255
+        else:
+            img_ndarray = np.array(img_ndarray > 0, dtype=np.int)
+
+        return img_ndarray
+
+    def __getitem__(self, idx):
+        img = Image.open(self.image_paths[idx])
+        lab = Image.open(self.label_paths[idx])
+        assert img.size == lab.size, \
+            f'Image and mask {self.image_paths[idx].stem} should be the same size, but are {img.size} and {lab.size}'
+        img = self.preprocess(img, self.scale, is_mask=False)
+        lab = self.preprocess(lab, self.scale, is_mask=True)
+        return {
+            'image': torch.as_tensor(img.copy()).float().contiguous(),
+            'mask': torch.as_tensor(lab.copy().astype(np.int16)).long().contiguous()
+        }
 
 class BasicDataset(Dataset):
     def __init__(self, images_dir: str, masks_dir: str, scale: float = 1.0, mask_suffix: str = ''):
